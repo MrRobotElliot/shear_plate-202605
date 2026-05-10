@@ -1,8 +1,23 @@
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'dart:async';
 
-void main() {
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:window_manager/window_manager.dart';
+
+bool get _supportsNativeWindow {
+  if (kIsWeb) return false;
+  return defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.linux ||
+      defaultTargetPlatform == TargetPlatform.macOS;
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  if (_supportsNativeWindow) {
+    await windowManager.ensureInitialized();
+  }
   runApp(const MyApp());
 }
 
@@ -32,7 +47,7 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   final List<String> _clipboardHistory = [];
   String? _selectedClipboard;
-  String? _pinnedClipboard;
+  bool _alwaysOnTop = false;
   String? _lastClipboardContent;
   Timer? _clipboardTimer;
   late TextEditingController _searchController;
@@ -67,37 +82,33 @@ class _MyHomePageState extends State<MyHomePage> {
         .toList();
   }
 
-  /// Inserts or moves [text] to the front of history, keeping [_pinnedClipboard] at index 0 when set.
+  /// Inserts or moves [text] to the front of history.
   void _bumpClipboardEntry(String text) {
     _clipboardHistory.remove(text);
-    final int index;
-    if (_pinnedClipboard == null) {
-      index = 0;
-    } else if (text == _pinnedClipboard) {
-      index = 0;
-    } else {
-      index = 1;
-    }
-    _clipboardHistory.insert(index.clamp(0, _clipboardHistory.length), text);
+    _clipboardHistory.insert(0, text);
   }
 
-  void _togglePinSelection() {
-    final sel = _selectedClipboard;
-    if (sel == null) {
+  /// Toggles whether the app window stays above other windows (desktop only).
+  Future<void> _toggleWindowAlwaysOnTop() async {
+    if (!_supportsNativeWindow) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先选中要固定的条目')),
+        const SnackBar(content: Text('仅桌面端支持窗口置顶')),
       );
       return;
     }
-    setState(() {
-      if (_pinnedClipboard == sel) {
-        _pinnedClipboard = null;
-      } else {
-        _pinnedClipboard = sel;
-        _clipboardHistory.remove(sel);
-        _clipboardHistory.insert(0, sel);
-      }
-    });
+
+    final next = !_alwaysOnTop;
+    setState(() => _alwaysOnTop = next);
+    try {
+      await windowManager.setAlwaysOnTop(next);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _alwaysOnTop = !next);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('无法切换窗口置顶：$e')),
+      );
+    }
   }
 
   void _openSettings() {
@@ -204,15 +215,14 @@ class _MyHomePageState extends State<MyHomePage> {
                   onPressed: _openSettings,
                 ),
                 IconButton(
-                  tooltip:
-                      _pinnedClipboard != null ? '取消固定在顶部' : '固定选中项到顶部',
+                  tooltip: _alwaysOnTop ? '取消窗口置顶' : '窗口置顶（显示在其他窗口之上）',
                   icon: Icon(
-                    _pinnedClipboard != null ? Icons.push_pin : Icons.push_pin_outlined,
-                    color: _pinnedClipboard != null
+                    _alwaysOnTop ? Icons.push_pin : Icons.push_pin_outlined,
+                    color: _alwaysOnTop
                         ? Theme.of(context).colorScheme.primary
                         : null,
                   ),
-                  onPressed: _togglePinSelection,
+                  onPressed: _toggleWindowAlwaysOnTop,
                 ),
               ],
             ),
