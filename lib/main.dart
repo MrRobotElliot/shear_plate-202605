@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shear_plate/settings_page.dart';
 import 'package:window_manager/window_manager.dart';
 
 bool get _supportsNativeWindow {
@@ -114,10 +115,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void _openSettings() {
     Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (context) => Scaffold(
-          appBar: AppBar(title: const Text('设置')),
-          body: const Center(child: Text('暂无设置项')),
-        ),
+        builder: (context) => const SettingsPage(),
       ),
     );
   }
