@@ -2,38 +2,23 @@ import 'package:flutter/material.dart';
 import 'package:shear_plate/login_page.dart';
 import 'package:shear_plate/register_page.dart';
 
-/// Settings screen with top tabs (TabLayout + ViewPager style) and swipeable pages.
-class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key});
+/// 账号页面：显示登录状态和相关操作。
+class AccountPage extends StatelessWidget {
+  const AccountPage({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('设置'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: '帐号'),
-              Tab(text: '通用'),
-            ],
-          ),
-        ),
-        body: const TabBarView(
-          children: [
-            _AccountTabBody(),
-            _GeneralTabBody(),
-          ],
-        ),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('帐号'),
       ),
+      body: const _AccountPageBody(),
     );
   }
 }
 
-/// 导出账号tab的body为单独的widget，供AccountPage复用
-class _AccountTabBody extends StatelessWidget {
-  const _AccountTabBody();
+class _AccountPageBody extends StatelessWidget {
+  const _AccountPageBody();
 
   @override
   Widget build(BuildContext context) {
@@ -125,24 +110,6 @@ class _AccountTabBody extends StatelessWidget {
           title: const Text('个人资料'),
           enabled: false,
           subtitle: const Text('登录后可用'),
-        ),
-      ],
-    );
-  }
-}
-
-class _GeneralTabBody extends StatelessWidget {
-  const _GeneralTabBody();
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        ListTile(
-          leading: const Icon(Icons.tune_outlined),
-          title: const Text('通用选项'),
-          subtitle: const Text('后续可在此添加主题、语言等设置'),
         ),
       ],
     );

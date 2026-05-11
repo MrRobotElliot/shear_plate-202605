@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shear_plate/account_page.dart';
 import 'package:shear_plate/settings_page.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -143,34 +144,50 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
+  void _openLogin() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => const AccountPage(),
+      ),
+    );
+  }
+
   void _startClipboardListener() {
     _clipboardTimer = Timer.periodic(const Duration(milliseconds: 500), (_) async {
-      ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
-      String? clipboardText = data?.text?.trim();
+      try {
+        ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
+        String? clipboardText = data?.text?.trim();
 
-      if (clipboardText != null && 
-          clipboardText.isNotEmpty && 
-          clipboardText != _lastClipboardContent) {
-        _lastClipboardContent = clipboardText;
-        debugPrint('Clipboard changed: $clipboardText');
+        if (clipboardText != null && 
+            clipboardText.isNotEmpty && 
+            clipboardText != _lastClipboardContent) {
+          _lastClipboardContent = clipboardText;
+          debugPrint('Clipboard changed: $clipboardText');
 
-        setState(() {
-          _bumpClipboardEntry(clipboardText);
-        });
+          setState(() {
+            _bumpClipboardEntry(clipboardText);
+          });
+        }
+      } catch (e) {
+        debugPrint('Failed to read clipboard: $e');
       }
     });
   }
 
   void _loadClipboardHistory() async {
-    ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
-    String? clipboardText = data?.text?.trim();
-    debugPrint('Clipboard content: $clipboardText');
+    try {
+      ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
+      String? clipboardText = data?.text?.trim();
+      debugPrint('Clipboard content: $clipboardText');
 
-    if (clipboardText != null && clipboardText.isNotEmpty) {
-      _lastClipboardContent = clipboardText;
-      setState(() {
-        _bumpClipboardEntry(clipboardText);
-      });
+      if (clipboardText != null && clipboardText.isNotEmpty) {
+        _lastClipboardContent = clipboardText;
+        setState(() {
+          _bumpClipboardEntry(clipboardText);
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to load clipboard history: $e');
     }
   }
 
@@ -229,6 +246,19 @@ class _MyHomePageState extends State<MyHomePage> {
                           const EdgeInsets.symmetric(horizontal: 16.0),
                     ),
                   ),
+                ),
+                IconButton(
+                  tooltip: '帐号',
+                  icon: CircleAvatar(
+                    radius: 16,
+                    backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                    child: Icon(
+                      Icons.account_circle_outlined,
+                      size: 20,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                  onPressed: _openLogin,
                 ),
                 IconButton(
                   tooltip: '设置',
