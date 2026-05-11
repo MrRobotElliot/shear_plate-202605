@@ -1,5 +1,8 @@
 allprojects {
     repositories {
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/jcenter") }
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
         google()
         mavenCentral()
     }
@@ -17,6 +20,13 @@ subprojects {
 }
 subprojects {
     project.evaluationDependsOn(":app")
+    configurations.all {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "org.jetbrains.kotlinx" && requested.name.startsWith("kotlinx-coroutines")) {
+                useVersion("1.8.1")
+            }
+        }
+    }
 }
 
 tasks.register<Delete>("clean") {

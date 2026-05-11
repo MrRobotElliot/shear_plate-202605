@@ -7,7 +7,8 @@ plugins {
 
 android {
     namespace = "com.example.shear_plate"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37
+    buildToolsVersion = "37.0.0" // 显式指定已安装的版本
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

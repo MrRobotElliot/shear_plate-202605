@@ -48,6 +48,7 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   final List<String> _clipboardHistory = [];
+
   /// Index into [_getFilteredHistory()]; null means no row selected.
   int? _selectedFilteredIndex;
   bool _alwaysOnTop = false;
@@ -55,6 +56,7 @@ class _MyHomePageState extends State<MyHomePage> {
   Timer? _clipboardTimer;
   late TextEditingController _searchController;
   final ScrollController _historyScrollController = ScrollController();
+  final FocusNode _listFocusNode = FocusNode();
   String _searchText = '';
 
   @override
@@ -75,6 +77,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void dispose() {
     _searchController.dispose();
     _historyScrollController.dispose();
+    _listFocusNode.dispose();
     _clipboardTimer?.cancel();
     super.dispose();
   }
@@ -117,9 +120,9 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> _toggleWindowAlwaysOnTop() async {
     if (!_supportsNativeWindow) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('仅桌面端支持窗口置顶')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('仅桌面端支持窗口置顶')));
       return;
     }
 
@@ -130,36 +133,34 @@ class _MyHomePageState extends State<MyHomePage> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _alwaysOnTop = !next);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('无法切换窗口置顶：$e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法切换窗口置顶：$e')));
     }
   }
 
   void _openSettings() {
     Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (context) => const SettingsPage(),
-      ),
+      MaterialPageRoute<void>(builder: (context) => const SettingsPage()),
     );
   }
 
   void _openLogin() {
     Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (context) => const AccountPage(),
-      ),
+      MaterialPageRoute<void>(builder: (context) => const AccountPage()),
     );
   }
 
   void _startClipboardListener() {
-    _clipboardTimer = Timer.periodic(const Duration(milliseconds: 500), (_) async {
+    _clipboardTimer = Timer.periodic(const Duration(milliseconds: 500), (
+      _,
+    ) async {
       try {
         ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
         String? clipboardText = data?.text?.trim();
 
-        if (clipboardText != null && 
-            clipboardText.isNotEmpty && 
+        if (clipboardText != null &&
+            clipboardText.isNotEmpty &&
             clipboardText != _lastClipboardContent) {
           _lastClipboardContent = clipboardText;
           debugPrint('Clipboard changed: $clipboardText');
@@ -198,16 +199,25 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() {
       _lastClipboardContent = text;
       _bumpClipboardEntry(text);
-      final list = _getFilteredHistory();
-      final i = list.indexOf(text);
-      _selectedFilteredIndex = i >= 0 ? i : null;
+      // After bumping, the item is at the top of the history.
+      // We set the selection to 0 so the first item is highlighted.
+      _selectedFilteredIndex = 0;
     });
     debugPrint('Clipboard restored from history: $text');
   }
 
+  void _handleCopyShortcut() {
+    if (_selectedFilteredIndex != null) {
+      final list = _getFilteredHistory();
+      if (_selectedFilteredIndex! < list.length) {
+        final text = list[_selectedFilteredIndex!];
+        _activateHistoryItem(text);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-  
     return Scaffold(
       body: Padding(
         padding: EdgeInsets.fromLTRB(
@@ -242,8 +252,9 @@ class _MyHomePageState extends State<MyHomePage> {
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8.0),
                       ),
-                      contentPadding:
-                          const EdgeInsets.symmetric(horizontal: 16.0),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16.0,
+                      ),
                     ),
                   ),
                 ),
@@ -251,7 +262,9 @@ class _MyHomePageState extends State<MyHomePage> {
                   tooltip: '帐号',
                   icon: CircleAvatar(
                     radius: 16,
-                    backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                    backgroundColor: Theme.of(
+                      context,
+                    ).colorScheme.primaryContainer,
                     child: Icon(
                       Icons.account_circle_outlined,
                       size: 20,
@@ -265,80 +278,108 @@ class _MyHomePageState extends State<MyHomePage> {
                   icon: const Icon(Icons.settings_outlined),
                   onPressed: _openSettings,
                 ),
-                IconButton(
-                  tooltip: _alwaysOnTop ? '取消窗口置顶' : '窗口置顶（显示在其他窗口之上）',
-                  icon: Icon(
-                    _alwaysOnTop ? Icons.push_pin : Icons.push_pin_outlined,
-                    color: _alwaysOnTop
-                        ? Theme.of(context).colorScheme.primary
-                        : null,
+                if (_supportsNativeWindow)
+                  IconButton(
+                    tooltip: _alwaysOnTop ? '取消窗口置顶' : '窗口置顶（显示在其他窗口之上）',
+                    icon: Icon(
+                      _alwaysOnTop ? Icons.push_pin : Icons.push_pin_outlined,
+                      color: _alwaysOnTop
+                          ? Theme.of(context).colorScheme.primary
+                          : null,
+                    ),
+                    onPressed: _toggleWindowAlwaysOnTop,
                   ),
-                  onPressed: _toggleWindowAlwaysOnTop,
-                ),
               ],
             ),
             const SizedBox(height: 16),
             Expanded(
-              child: _getFilteredHistory().isEmpty
-                  ? const Center(child: Text('正在获取剪切板内容...'))
-                  : Material(
-                      color: Theme.of(context).colorScheme.surfaceContainerLow,
-                      borderRadius: BorderRadius.circular(12),
-                      clipBehavior: Clip.antiAlias,
-                      child: Scrollbar(
-                        controller: _historyScrollController,
-                        thumbVisibility: true,
-                        thickness: 8,
-                        radius: const Radius.circular(4),
-                        child: ListView.builder(
+              child: KeyboardListener(
+                focusNode: _listFocusNode,
+                autofocus: true,
+                onKeyEvent: (event) {
+                  if (event is KeyDownEvent &&
+                      event.logicalKey == LogicalKeyboardKey.keyC &&
+                      HardwareKeyboard.instance.isControlPressed) {
+                    _handleCopyShortcut();
+                  }
+                },
+                child: _getFilteredHistory().isEmpty
+                    ? const Center(child: Text('正在获取剪切板内容...'))
+                    : Material(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(12),
+                        clipBehavior: Clip.antiAlias,
+                        child: Scrollbar(
                           controller: _historyScrollController,
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
-                          itemCount: _getFilteredHistory().length,
-                          itemBuilder: (context, index) {
-                            final item = _getFilteredHistory()[index];
-                            final isSelected = _selectedFilteredIndex == index;
-                            return GestureDetector(
-                              onTap: () {
-                                setState(() {
-                                  _selectedFilteredIndex =
-                                      isSelected ? null : index;
-                                });
-                                debugPrint(
+                          thumbVisibility: true,
+                          thickness: 8,
+                          radius: const Radius.circular(4),
+                          child: ListView.builder(
+                            controller: _historyScrollController,
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
+                            itemCount: _getFilteredHistory().length,
+                            itemBuilder: (context, index) {
+                              final item = _getFilteredHistory()[index];
+                              final isSelected =
+                                  _selectedFilteredIndex == index;
+                              return GestureDetector(
+                                onTap: () {
+                                  setState(() {
+                                    _selectedFilteredIndex = isSelected
+                                        ? null
+                                        : index;
+                                  });
+                                  if (_selectedFilteredIndex != null) {
+                                    _listFocusNode.requestFocus();
+                                  }
+                                  debugPrint(
                                     'Selected list index: $_selectedFilteredIndex',
-                                );
-                              },
-                              onDoubleTap: () => _activateHistoryItem(item),
-                              child: Container(
-                                width: double.infinity,
-                                margin: const EdgeInsets.symmetric(vertical: 4.0),
-                                padding: const EdgeInsets.all(12.0),
-                                decoration: BoxDecoration(
-                                  color: isSelected
-                                      ? Theme.of(context).colorScheme.primary
-                                      : Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest,
-                                  borderRadius: BorderRadius.circular(8.0),
-                                  border: isSelected
-                                      ? Border.all(
-                                          color:
-                                              Theme.of(context).colorScheme.primary,
-                                          width: 2.0,
-                                        )
-                                      : null,
-                                ),
-                                child: SizedBox(
+                                  );
+                                },
+                                onDoubleTap: () => _activateHistoryItem(item),
+                                child: Container(
                                   width: double.infinity,
+                                  margin: const EdgeInsets.symmetric(
+                                    vertical: 4.0,
+                                  ),
+                                  padding: const EdgeInsets.all(12.0),
+                                  decoration: BoxDecoration(
+                                    color: isSelected
+                                        ? Theme.of(
+                                            context,
+                                          ).colorScheme.primaryContainer
+                                        : Theme.of(
+                                            context,
+                                          ).colorScheme.surfaceContainerHighest,
+                                    borderRadius: BorderRadius.circular(8.0),
+                                    border: isSelected
+                                        ? Border.all(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.primary,
+                                            width: 2.0,
+                                          )
+                                        : null,
+                                  ),
                                   child: RichText(
                                     text: TextSpan(
                                       children: [
-                                        _clipboardCollapsedSpan(item, isSelected: isSelected),
+                                        _clipboardCollapsedSpan(
+                                          item,
+                                          isSelected: isSelected,
+                                        ),
                                       ],
                                       style: TextStyle(
                                         color: isSelected
-                                            ? Theme.of(context).colorScheme.onPrimary
-                                            : Theme.of(context).colorScheme.onSurface,
+                                            ? Theme.of(
+                                                context,
+                                              ).colorScheme.onPrimaryContainer
+                                            : Theme.of(
+                                                context,
+                                              ).colorScheme.onSurface,
                                       ),
                                     ),
                                     textAlign: TextAlign.start,
@@ -349,12 +390,12 @@ class _MyHomePageState extends State<MyHomePage> {
                                         : TextOverflow.ellipsis,
                                   ),
                                 ),
-                              ),
-                            );
-                          },
+                              );
+                            },
+                          ),
                         ),
                       ),
-                    ),
+              ),
             ),
           ],
         ),
