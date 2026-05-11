@@ -47,11 +47,13 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   final List<String> _clipboardHistory = [];
-  String? _selectedClipboard;
+  /// Index into [_getFilteredHistory()]; null means no row selected.
+  int? _selectedFilteredIndex;
   bool _alwaysOnTop = false;
   String? _lastClipboardContent;
   Timer? _clipboardTimer;
   late TextEditingController _searchController;
+  final ScrollController _historyScrollController = ScrollController();
   String _searchText = '';
 
   @override
@@ -61,6 +63,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _searchController.addListener(() {
       setState(() {
         _searchText = _searchController.text;
+        _selectedFilteredIndex = null;
       });
     });
     _loadClipboardHistory();
@@ -70,6 +73,7 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void dispose() {
     _searchController.dispose();
+    _historyScrollController.dispose();
     _clipboardTimer?.cancel();
     super.dispose();
   }
@@ -81,6 +85,25 @@ class _MyHomePageState extends State<MyHomePage> {
     return _clipboardHistory
         .where((item) => item.toLowerCase().contains(_searchText.toLowerCase()))
         .toList();
+  }
+
+  /// Collapsed list preview: truncate by grapheme count, append ellipsis.
+  static const int _kPreviewMaxGraphemes = 80;
+
+  InlineSpan _clipboardCollapsedSpan(String full, {bool isSelected = false}) {
+    final g = full.characters;
+    if (g.length <= _kPreviewMaxGraphemes || isSelected) {
+      return TextSpan(text: full);
+    }
+    return TextSpan(
+      children: [
+        TextSpan(text: g.take(_kPreviewMaxGraphemes).toString()),
+        TextSpan(
+          text: '······',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+      ],
+    );
   }
 
   /// Inserts or moves [text] to the front of history.
@@ -133,7 +156,6 @@ class _MyHomePageState extends State<MyHomePage> {
 
         setState(() {
           _bumpClipboardEntry(clipboardText);
-          _selectedClipboard = clipboardText;
         });
       }
     });
@@ -148,7 +170,6 @@ class _MyHomePageState extends State<MyHomePage> {
       _lastClipboardContent = clipboardText;
       setState(() {
         _bumpClipboardEntry(clipboardText);
-        _selectedClipboard = clipboardText;
       });
     }
   }
@@ -160,7 +181,9 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() {
       _lastClipboardContent = text;
       _bumpClipboardEntry(text);
-      _selectedClipboard = text;
+      final list = _getFilteredHistory();
+      final i = list.indexOf(text);
+      _selectedFilteredIndex = i >= 0 ? i : null;
     });
     debugPrint('Clipboard restored from history: $text');
   }
@@ -228,47 +251,81 @@ class _MyHomePageState extends State<MyHomePage> {
             Expanded(
               child: _getFilteredHistory().isEmpty
                   ? const Center(child: Text('正在获取剪切板内容...'))
-                  : ListView.builder(
-                      itemCount: _getFilteredHistory().length,
-                      itemBuilder: (context, index) {
-                        final item = _getFilteredHistory()[index];
-                        return GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              _selectedClipboard = _selectedClipboard == item ? null : item;
-                            });
-                            debugPrint('Selected clipboard content: $_selectedClipboard');
+                  : Material(
+                      color: Theme.of(context).colorScheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(12),
+                      clipBehavior: Clip.antiAlias,
+                      child: Scrollbar(
+                        controller: _historyScrollController,
+                        thumbVisibility: true,
+                        thickness: 8,
+                        radius: const Radius.circular(4),
+                        child: ListView.builder(
+                          controller: _historyScrollController,
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
+                          itemCount: _getFilteredHistory().length,
+                          itemBuilder: (context, index) {
+                            final item = _getFilteredHistory()[index];
+                            final isSelected = _selectedFilteredIndex == index;
+                            return GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  _selectedFilteredIndex =
+                                      isSelected ? null : index;
+                                });
+                                debugPrint(
+                                    'Selected list index: $_selectedFilteredIndex',
+                                );
+                              },
+                              onDoubleTap: () => _activateHistoryItem(item),
+                              child: Container(
+                                width: double.infinity,
+                                margin: const EdgeInsets.symmetric(vertical: 4.0),
+                                padding: const EdgeInsets.all(12.0),
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? Theme.of(context).colorScheme.primary
+                                      : Theme.of(context)
+                                          .colorScheme
+                                          .surfaceContainerHighest,
+                                  borderRadius: BorderRadius.circular(8.0),
+                                  border: isSelected
+                                      ? Border.all(
+                                          color:
+                                              Theme.of(context).colorScheme.primary,
+                                          width: 2.0,
+                                        )
+                                      : null,
+                                ),
+                                child: SizedBox(
+                                  width: double.infinity,
+                                  child: RichText(
+                                    text: TextSpan(
+                                      children: [
+                                        _clipboardCollapsedSpan(item, isSelected: isSelected),
+                                      ],
+                                      style: TextStyle(
+                                        color: isSelected
+                                            ? Theme.of(context).colorScheme.onPrimary
+                                            : Theme.of(context).colorScheme.onSurface,
+                                      ),
+                                    ),
+                                    textAlign: TextAlign.start,
+                                    softWrap: true,
+                                    maxLines: isSelected ? null : 3,
+                                    overflow: isSelected
+                                        ? TextOverflow.visible
+                                        : TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ),
+                            );
                           },
-                          onDoubleTap: () => _activateHistoryItem(item),
-                          child: Container(
-                            width: double.infinity,
-                            margin: const EdgeInsets.symmetric(vertical: 4.0),
-                            padding: const EdgeInsets.all(12.0),
-                            decoration: BoxDecoration(
-                              color: _selectedClipboard == item
-                                  ? Theme.of(context)
-                                      .colorScheme
-                                      .primary
-                                      .withValues(alpha: 0.3)
-                                  : Theme.of(context).colorScheme.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(8.0),
-                              border: _selectedClipboard == item
-                                  ? Border.all(
-                                      color: Theme.of(context).colorScheme.primary,
-                                      width: 2.0,
-                                    )
-                                  : null,
-                            ),
-                            child: Text(item, softWrap: true),
-                          ),
-                        );
-                      },
+                        ),
+                      ),
                     ),
             ),
-            if (_selectedClipboard != null) ...[
-              const SizedBox(height: 10),
-              Text('$_selectedClipboard'),
-            ],
           ],
         ),
       ),
