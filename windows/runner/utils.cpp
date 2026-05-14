@@ -106,6 +106,100 @@ int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
   return -1;
 }
 
+static std::wstring GetFileNameFromPath(const std::wstring& path) {
+  size_t pos = path.find_last_of(L"/\\");
+  if (pos == std::wstring::npos) {
+    return path;
+  }
+  return path.substr(pos + 1);
+}
+
+static std::vector<uint8_t> EncodeHIconAsPng(HICON icon) {
+  std::vector<uint8_t> result;
+  if (!icon) {
+    return result;
+  }
+
+  InitGdiPlus();
+  Gdiplus::Bitmap* bitmap = Gdiplus::Bitmap::FromHICON(icon);
+  if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
+    delete bitmap;
+    return result;
+  }
+
+  IStream* pSaveStream = nullptr;
+  if (CreateStreamOnHGlobal(NULL, TRUE, &pSaveStream) != S_OK) {
+    delete bitmap;
+    return result;
+  }
+
+  CLSID pngClsid;
+  if (GetEncoderClsid(L"image/png", &pngClsid) != -1 &&
+      bitmap->Save(pSaveStream, &pngClsid, NULL) == Gdiplus::Ok) {
+    HGLOBAL hSaveMem = nullptr;
+    if (GetHGlobalFromStream(pSaveStream, &hSaveMem) == S_OK && hSaveMem) {
+      void* pSaveData = GlobalLock(hSaveMem);
+      if (pSaveData) {
+        SIZE_T saveSize = GlobalSize(hSaveMem);
+        result.assign((uint8_t*)pSaveData, (uint8_t*)pSaveData + saveSize);
+        GlobalUnlock(hSaveMem);
+      }
+    }
+  }
+
+  if (pSaveStream) {
+    pSaveStream->Release();
+  }
+  delete bitmap;
+  return result;
+}
+
+bool GetClipboardOwnerInfo(HWND hwnd, std::wstring& outAppName,
+                           std::vector<uint8_t>& outIconPng) {
+  HWND owner = GetClipboardOwner();
+  if (!owner) {
+    return false;
+  }
+
+  DWORD process_id = 0;
+  GetWindowThreadProcessId(owner, &process_id);
+  if (process_id == 0) {
+    return false;
+  }
+
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+  if (!process) {
+    return false;
+  }
+
+  WCHAR path[MAX_PATH];
+  DWORD path_length = static_cast<DWORD>(std::size(path));
+  if (!QueryFullProcessImageNameW(process, 0, path, &path_length)) {
+    CloseHandle(process);
+    return false;
+  }
+  CloseHandle(process);
+
+  std::wstring full_path(path, path_length);
+  std::wstring file_name = GetFileNameFromPath(full_path);
+  size_t dot = file_name.find_last_of(L'.');
+  if (dot != std::wstring::npos) {
+    file_name = file_name.substr(0, dot);
+  }
+  outAppName = file_name;
+
+  SHFILEINFOW sfi = {};
+  if (SHGetFileInfoW(full_path.c_str(), FILE_ATTRIBUTE_NORMAL, &sfi,
+                     sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON) != 0) {
+    if (sfi.hIcon) {
+      outIconPng = EncodeHIconAsPng(sfi.hIcon);
+      DestroyIcon(sfi.hIcon);
+    }
+  }
+
+  return true;
+}
+
 bool SetImageToClipboard(HWND hwnd, const std::vector<uint8_t>& imageData) {
   if (imageData.empty()) {
     std::cout << "[SetImageToClipboard] ERROR: imageData is empty" << std::endl;

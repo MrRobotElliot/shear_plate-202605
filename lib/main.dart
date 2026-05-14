@@ -12,11 +12,17 @@ import 'package:window_manager/window_manager.dart';
 class ClipboardItem {
   final String? text;
   final Uint8List? imageData;
+  final String? sourceAppName;
+  final Uint8List? sourceAppIcon;
   final DateTime timestamp;
 
-  ClipboardItem.text(this.text) : imageData = null, timestamp = DateTime.now();
+  ClipboardItem.text(this.text, {this.sourceAppName, this.sourceAppIcon})
+    : imageData = null,
+      timestamp = DateTime.now();
 
-  ClipboardItem.image(this.imageData) : text = null, timestamp = DateTime.now();
+  ClipboardItem.image(this.imageData, {this.sourceAppName, this.sourceAppIcon})
+    : text = null,
+      timestamp = DateTime.now();
 
   bool get isText => text != null;
   bool get isImage => imageData != null;
@@ -135,6 +141,29 @@ class _MyHomePageState extends State<MyHomePage> {
         .toList();
   }
 
+  Future<Map<String, Object?>> _fetchClipboardSourceInfo() async {
+    if (!_supportsNativeWindow) {
+      return <String, Object?>{};
+    }
+
+    try {
+      const platform = MethodChannel('clipboard_image');
+      final Map<String, Object?>? result = await platform
+          .invokeMapMethod<String, Object?>('getClipboardOwnerInfo');
+      return result ?? <String, Object?>{};
+    } catch (e) {
+      debugPrint('Failed to get clipboard source info: $e');
+      return <String, Object?>{};
+    }
+  }
+
+  Uint8List? _normalizeSourceIcon(Object? raw) {
+    if (raw == null) return null;
+    if (raw is Uint8List) return raw;
+    if (raw is List<int>) return Uint8List.fromList(raw);
+    return null;
+  }
+
   /// Collapsed list preview: truncate by grapheme count, append ellipsis.
   static const int _kPreviewMaxGraphemes = 80;
 
@@ -221,7 +250,12 @@ class _MyHomePageState extends State<MyHomePage> {
             'getImage',
           );
           if (imageData != null && imageData.isNotEmpty) {
-            final item = ClipboardItem.image(imageData);
+            final sourceInfo = await _fetchClipboardSourceInfo();
+            final item = ClipboardItem.image(
+              imageData,
+              sourceAppName: sourceInfo['name'] as String?,
+              sourceAppIcon: _normalizeSourceIcon(sourceInfo['icon']),
+            );
             if (item != _lastClipboardContent) {
               _lastClipboardContent = item;
               debugPrint('Clipboard changed: image');
@@ -240,7 +274,12 @@ class _MyHomePageState extends State<MyHomePage> {
         String? clipboardText = textData?.text?.trim();
 
         if (clipboardText != null && clipboardText.isNotEmpty) {
-          final item = ClipboardItem.text(clipboardText);
+          final sourceInfo = await _fetchClipboardSourceInfo();
+          final item = ClipboardItem.text(
+            clipboardText,
+            sourceAppName: sourceInfo['name'] as String?,
+            sourceAppIcon: _normalizeSourceIcon(sourceInfo['icon']),
+          );
           if (item != _lastClipboardContent) {
             _lastClipboardContent = item;
             debugPrint('Clipboard changed: text');
@@ -264,7 +303,12 @@ class _MyHomePageState extends State<MyHomePage> {
           'getImage',
         );
         if (imageData != null && imageData.isNotEmpty) {
-          final item = ClipboardItem.image(imageData);
+          final sourceInfo = await _fetchClipboardSourceInfo();
+          final item = ClipboardItem.image(
+            imageData,
+            sourceAppName: sourceInfo['name'] as String?,
+            sourceAppIcon: _normalizeSourceIcon(sourceInfo['icon']),
+          );
           _lastClipboardContent = item;
           setState(() {
             _bumpClipboardEntry(item);
@@ -512,52 +556,120 @@ class _MyHomePageState extends State<MyHomePage> {
                                           )
                                         : null,
                                   ),
-                                  child: item.isImage
-                                      ? Row(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      if (item.sourceAppName != null ||
+                                          item.sourceAppIcon != null)
+                                        Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.center,
                                           children: [
-                                            Container(
-                                              width: 40,
-                                              height: 40,
-                                              decoration: BoxDecoration(
-                                                borderRadius:
-                                                    BorderRadius.circular(4.0),
-                                                image: DecorationImage(
-                                                  image: MemoryImage(
-                                                    item.imageData!,
+                                            if (item.sourceAppIcon != null)
+                                              Container(
+                                                width: 20,
+                                                height: 20,
+                                                decoration: BoxDecoration(
+                                                  borderRadius:
+                                                      BorderRadius.circular(
+                                                        4.0,
+                                                      ),
+                                                  image: DecorationImage(
+                                                    image: MemoryImage(
+                                                      item.sourceAppIcon!,
+                                                    ),
+                                                    fit: BoxFit.cover,
                                                   ),
-                                                  fit: BoxFit.cover,
+                                                ),
+                                              )
+                                            else
+                                              Icon(
+                                                Icons.apps,
+                                                size: 20,
+                                                color: isSelected
+                                                    ? Theme.of(context)
+                                                          .colorScheme
+                                                          .onPrimaryContainer
+                                                    : Theme.of(
+                                                        context,
+                                                      ).colorScheme.onSurface,
+                                              ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                item.sourceAppName != null
+                                                    ? '来自：${item.sourceAppName}'
+                                                    : '来自：未知应用',
+                                                style: TextStyle(
+                                                  color: isSelected
+                                                      ? Theme.of(context)
+                                                            .colorScheme
+                                                            .onPrimaryContainer
+                                                      : Theme.of(
+                                                          context,
+                                                        ).colorScheme.onSurface,
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      if (item.sourceAppName != null ||
+                                          item.sourceAppIcon != null)
+                                        const SizedBox(height: 10),
+                                      item.isImage
+                                          ? Row(
+                                              children: [
+                                                Container(
+                                                  width: 40,
+                                                  height: 40,
+                                                  decoration: BoxDecoration(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          4.0,
+                                                        ),
+                                                    image: DecorationImage(
+                                                      image: MemoryImage(
+                                                        item.imageData!,
+                                                      ),
+                                                      fit: BoxFit.cover,
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 12),
+                                                const Text('[图片]'),
+                                              ],
+                                            )
+                                          : RichText(
+                                              text: TextSpan(
+                                                children: [
+                                                  _clipboardCollapsedSpan(
+                                                    item,
+                                                    isSelected: isSelected,
+                                                  ),
+                                                ],
+                                                style: TextStyle(
+                                                  color: isSelected
+                                                      ? Theme.of(context)
+                                                            .colorScheme
+                                                            .onPrimaryContainer
+                                                      : Theme.of(
+                                                          context,
+                                                        ).colorScheme.onSurface,
                                                 ),
                                               ),
+                                              textAlign: TextAlign.start,
+                                              softWrap: true,
+                                              maxLines: isSelected ? null : 3,
+                                              overflow: isSelected
+                                                  ? TextOverflow.visible
+                                                  : TextOverflow.ellipsis,
                                             ),
-                                            const SizedBox(width: 12),
-                                            const Text('[图片]'),
-                                          ],
-                                        )
-                                      : RichText(
-                                          text: TextSpan(
-                                            children: [
-                                              _clipboardCollapsedSpan(
-                                                item,
-                                                isSelected: isSelected,
-                                              ),
-                                            ],
-                                            style: TextStyle(
-                                              color: isSelected
-                                                  ? Theme.of(context)
-                                                        .colorScheme
-                                                        .onPrimaryContainer
-                                                  : Theme.of(
-                                                      context,
-                                                    ).colorScheme.onSurface,
-                                            ),
-                                          ),
-                                          textAlign: TextAlign.start,
-                                          softWrap: true,
-                                          maxLines: isSelected ? null : 3,
-                                          overflow: isSelected
-                                              ? TextOverflow.visible
-                                              : TextOverflow.ellipsis,
-                                        ),
+                                    ],
+                                  ),
                                 ),
                               );
                             },

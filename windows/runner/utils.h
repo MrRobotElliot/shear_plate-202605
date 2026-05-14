@@ -23,4 +23,9 @@ bool SetImageToClipboard(HWND hwnd, const std::vector<uint8_t>& imageData);
 // Gets image data from the clipboard.
 std::vector<uint8_t> GetImageFromClipboard(HWND hwnd);
 
+// Gets the owner process name and icon for the current clipboard contents.
+bool GetClipboardOwnerInfo(HWND hwnd,
+                           std::wstring& outAppName,
+                           std::vector<uint8_t>& outIconPng);
+
 #endif  // RUNNER_UTILS_H_

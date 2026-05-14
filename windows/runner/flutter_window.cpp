@@ -68,6 +68,21 @@ bool FlutterWindow::OnCreate() {
           } else {
             result->Success(flutter::EncodableValue(nullptr));
           }
+        } else if (call.method_name() == "getClipboardOwnerInfo") {
+          std::wstring app_name;
+          std::vector<uint8_t> app_icon;
+          if (GetClipboardOwnerInfo(NULL, app_name, app_icon)) {
+            flutter::EncodableMap info;
+            info[flutter::EncodableValue("name")] =
+                flutter::EncodableValue(Utf8FromUtf16(app_name.c_str()));
+            if (!app_icon.empty()) {
+              info[flutter::EncodableValue("icon")] =
+                  flutter::EncodableValue(app_icon);
+            }
+            result->Success(flutter::EncodableValue(info));
+          } else {
+            result->Success(flutter::EncodableValue(flutter::EncodableMap()));
+          }
         } else {
           result->NotImplemented();
         }
