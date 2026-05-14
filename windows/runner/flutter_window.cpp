@@ -1,8 +1,13 @@
 #include "flutter_window.h"
 
+#include <flutter/method_channel.h>
+#include <flutter/plugin_registrar_windows.h>
+#include <flutter/standard_method_codec.h>
 #include <optional>
+#include <windows.h>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "utils.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -26,6 +31,47 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+
+  // Set up method channel for clipboard image support
+  clipboard_channel_ = std::make_unique<flutter::MethodChannel<>>(
+      flutter_controller_->engine()->messenger(), "clipboard_image",
+      &flutter::StandardMethodCodec::GetInstance());
+  clipboard_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<>& call,
+         std::unique_ptr<flutter::MethodResult<>> result) {
+        if (call.method_name() == "setImage") {
+          const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments());
+          if (arguments) {
+            auto data_it = arguments->find(flutter::EncodableValue("data"));
+            if (data_it != arguments->end()) {
+              const auto* data_list = std::get_if<std::vector<uint8_t>>(&data_it->second);
+              if (data_list) {
+                std::cout << "[CPP setImage] Called with " << data_list->size() << " bytes" << std::endl;
+                bool clipboard_success = SetImageToClipboard(NULL, *data_list);
+                std::cout << "[CPP setImage] SetImageToClipboard returned: " << (clipboard_success ? "true" : "false") << std::endl;
+                result->Success();
+                return;
+              } else {
+                std::cerr << "[CPP setImage] ERROR: data is not a vector<uint8_t>" << std::endl;
+              }
+            } else {
+              std::cerr << "[CPP setImage] ERROR: data field not found in map" << std::endl;
+            }
+          } else {
+            std::cerr << "[CPP setImage] ERROR: arguments is not an EncodableMap" << std::endl;
+          }
+          result->Error("INVALID_ARGUMENT", "Image data is invalid");
+        } else if (call.method_name() == "getImage") {
+          auto imageData = GetImageFromClipboard(NULL);
+          if (!imageData.empty()) {
+            result->Success(flutter::EncodableValue(imageData));
+          } else {
+            result->Success(flutter::EncodableValue(nullptr));
+          }
+        } else {
+          result->NotImplemented();
+        }
+      });
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();

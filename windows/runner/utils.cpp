@@ -4,8 +4,16 @@
 #include <io.h>
 #include <stdio.h>
 #include <windows.h>
+#include <shellapi.h>
+#include <gdiplus.h>
+#include <objidl.h>
+#include <shlwapi.h>
+
+#pragma comment(lib, "shlwapi.lib")
 
 #include <iostream>
+#include <vector>
+#include <memory>
 
 void CreateAndAttachConsole() {
   if (::AllocConsole()) {
@@ -62,4 +70,371 @@ std::string Utf8FromUtf16(const wchar_t* utf16_string) {
     return std::string();
   }
   return utf8_string;
+}
+
+// Initialize GDI+ if not already done
+static void InitGdiPlus() {
+  static bool initialized = false;
+  static ULONG_PTR gdiplusToken;
+  if (!initialized) {
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+    initialized = true;
+  }
+}
+
+// Helper function to get encoder CLSID
+int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
+  UINT num = 0;
+  UINT size = 0;
+  Gdiplus::GetImageEncodersSize(&num, &size);
+  if (size == 0) return -1;
+
+  Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)malloc(size);
+  if (!pImageCodecInfo) return -1;
+
+  Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
+
+  for (UINT j = 0; j < num; ++j) {
+    if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
+      *pClsid = pImageCodecInfo[j].Clsid;
+      free(pImageCodecInfo);
+      return j;
+    }
+  }
+  free(pImageCodecInfo);
+  return -1;
+}
+
+bool SetImageToClipboard(HWND hwnd, const std::vector<uint8_t>& imageData) {
+  if (imageData.empty()) {
+    std::cout << "[SetImageToClipboard] ERROR: imageData is empty" << std::endl;
+    return false;
+  }
+
+  std::cout << "[SetImageToClipboard] START: bytes=" << imageData.size() << std::endl;
+
+  InitGdiPlus();
+
+  // Load image from PNG bytes
+  HGLOBAL hStreamMem = GlobalAlloc(GMEM_MOVEABLE, imageData.size());
+  if (!hStreamMem) {
+    std::cout << "[SetImageToClipboard] ERROR: GlobalAlloc failed" << std::endl;
+    return false;
+  }
+  void* pStreamMem = GlobalLock(hStreamMem);
+  if (!pStreamMem) {
+    GlobalFree(hStreamMem);
+    std::cout << "[SetImageToClipboard] ERROR: GlobalLock failed" << std::endl;
+    return false;
+  }
+  memcpy(pStreamMem, imageData.data(), imageData.size());
+  GlobalUnlock(hStreamMem);
+
+  IStream* pStream = nullptr;
+  if (CreateStreamOnHGlobal(hStreamMem, FALSE, &pStream) != S_OK) {
+    GlobalFree(hStreamMem);
+    std::cout << "[SetImageToClipboard] ERROR: CreateStreamOnHGlobal failed" << std::endl;
+    return false;
+  }
+
+  Gdiplus::Bitmap* bitmap = Gdiplus::Bitmap::FromStream(pStream);
+  pStream->Release();
+  if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
+    delete bitmap;
+    std::cout << "[SetImageToClipboard] ERROR: Failed to create Bitmap from stream" << std::endl;
+    return false;
+  }
+
+  std::cout << "[SetImageToClipboard] Bitmap created successfully" << std::endl;
+
+  HBITMAP hBitmap = NULL;
+  HGLOBAL hDib = NULL;
+  Gdiplus::Color blackColor(255, 0, 0, 0);
+  if (bitmap->GetHBITMAP(blackColor, &hBitmap) != Gdiplus::Ok || !hBitmap) {
+    hBitmap = NULL;
+  } else {
+    std::cout << "[SetImageToClipboard] HBITMAP created" << std::endl;
+  }
+
+  if (hBitmap) {
+    BITMAP bmp;
+    if (GetObject(hBitmap, sizeof(bmp), &bmp) == sizeof(bmp)) {
+      BITMAPINFOHEADER bi = {};
+      bi.biSize = sizeof(BITMAPINFOHEADER);
+      bi.biWidth = bmp.bmWidth;
+      bi.biHeight = bmp.bmHeight;
+      bi.biPlanes = 1;
+      bi.biBitCount = bmp.bmBitsPixel;
+      bi.biCompression = BI_RGB;
+
+      HDC hdc = GetDC(NULL);
+      if (hdc) {
+        int scanLine = ((bmp.bmWidth * bi.biBitCount + 31) / 32) * 4;
+        bi.biSizeImage = scanLine * bmp.bmHeight;
+        SIZE_T dibSize = sizeof(BITMAPINFOHEADER) + scanLine * bmp.bmHeight;
+        hDib = GlobalAlloc(GMEM_MOVEABLE, dibSize);
+        if (hDib) {
+          BITMAPINFO* pDibInfo = (BITMAPINFO*)GlobalLock(hDib);
+          if (pDibInfo) {
+            pDibInfo->bmiHeader = bi;
+            BYTE* dibBits = reinterpret_cast<BYTE*>(pDibInfo) + sizeof(BITMAPINFOHEADER);
+            if (!GetDIBits(hdc, hBitmap, 0, bmp.bmHeight,
+                           dibBits, pDibInfo, DIB_RGB_COLORS)) {
+              GlobalUnlock(hDib);
+              GlobalFree(hDib);
+              hDib = NULL;
+            } else {
+              GlobalUnlock(hDib);
+              std::cout << "[SetImageToClipboard] DIB created" << std::endl;
+            }
+          } else {
+            GlobalFree(hDib);
+            hDib = NULL;
+          }
+        }
+        ReleaseDC(NULL, hdc);
+      }
+    } else {
+      DeleteObject(hBitmap);
+      hBitmap = NULL;
+    }
+  }
+
+  std::vector<uint8_t> pngBytes;
+  CLSID pngClsid;
+  if (GetEncoderClsid(L"image/png", &pngClsid) != -1) {
+    IStream* pSaveStream = nullptr;
+    if (CreateStreamOnHGlobal(NULL, TRUE, &pSaveStream) == S_OK) {
+      if (bitmap->Save(pSaveStream, &pngClsid, NULL) == Gdiplus::Ok) {
+        HGLOBAL hSaveMem = nullptr;
+        if (GetHGlobalFromStream(pSaveStream, &hSaveMem) == S_OK && hSaveMem) {
+          void* pSaveData = GlobalLock(hSaveMem);
+          if (pSaveData) {
+            SIZE_T saveSize = GlobalSize(hSaveMem);
+            pngBytes.assign((uint8_t*)pSaveData, (uint8_t*)pSaveData + saveSize);
+            GlobalUnlock(hSaveMem);
+            std::cout << "[SetImageToClipboard] PNG encoded, size=" << saveSize << std::endl;
+          }
+        }
+      }
+      pSaveStream->Release();
+    }
+  }
+
+  delete bitmap;
+
+  UINT cfPng = RegisterClipboardFormat(L"PNG");
+  if (cfPng == 0) {
+    if (hBitmap) {
+      DeleteObject(hBitmap);
+    }
+    if (hDib) {
+      GlobalFree(hDib);
+    }
+    std::cout << "[SetImageToClipboard] ERROR: RegisterClipboardFormat failed" << std::endl;
+    return false;
+  }
+
+  HGLOBAL hPng = nullptr;
+  if (!pngBytes.empty()) {
+    hPng = GlobalAlloc(GMEM_MOVEABLE, pngBytes.size());
+    if (!hPng) {
+      DeleteObject(hBitmap);
+      GlobalFree(hDib);
+      std::cout << "[SetImageToClipboard] ERROR: GlobalAlloc for PNG failed" << std::endl;
+      return false;
+    }
+    void* pPng = GlobalLock(hPng);
+    if (!pPng) {
+      GlobalFree(hPng);
+      DeleteObject(hBitmap);
+      GlobalFree(hDib);
+      std::cout << "[SetImageToClipboard] ERROR: GlobalLock for PNG failed" << std::endl;
+      return false;
+    }
+    memcpy(pPng, pngBytes.data(), pngBytes.size());
+    GlobalUnlock(hPng);
+  }
+
+  if (!OpenClipboard(NULL)) {
+    GlobalFree(hPng);
+    GlobalFree(hDib);
+    DeleteObject(hBitmap);
+    std::cout << "[SetImageToClipboard] ERROR: OpenClipboard failed" << std::endl;
+    return false;
+  }
+
+  EmptyClipboard();
+  std::cout << "[SetImageToClipboard] Clipboard emptied" << std::endl;
+
+  bool success = false;
+
+  if (hBitmap) {
+    if (SetClipboardData(CF_BITMAP, hBitmap)) {
+      success = true;
+      std::cout << "[SetImageToClipboard] CF_BITMAP set" << std::endl;
+    } else {
+      DeleteObject(hBitmap);
+      hBitmap = NULL;
+      std::cout << "[SetImageToClipboard] CF_BITMAP failed" << std::endl;
+    }
+  }
+
+  if (hDib) {
+    if (SetClipboardData(CF_DIB, hDib)) {
+      success = true;
+      std::cout << "[SetImageToClipboard] CF_DIB set" << std::endl;
+    } else {
+      GlobalFree(hDib);
+      hDib = NULL;
+      std::cout << "[SetImageToClipboard] CF_DIB failed" << std::endl;
+    }
+  }
+
+  if (hPng) {
+    if (SetClipboardData(cfPng, hPng)) {
+      success = true;
+      std::cout << "[SetImageToClipboard] PNG format set" << std::endl;
+    } else {
+      GlobalFree(hPng);
+      std::cout << "[SetImageToClipboard] PNG format failed" << std::endl;
+    }
+  }
+
+  CloseClipboard();
+  std::cout << "[SetImageToClipboard] END: success=" << (success ? "true" : "false") << std::endl;
+
+  if (!success) {
+    if (hBitmap) {
+      DeleteObject(hBitmap);
+    }
+    if (hDib) {
+      GlobalFree(hDib);
+    }
+  }
+
+  return success;
+}
+
+
+std::vector<uint8_t> GetImageFromClipboard(HWND hwnd) {
+  std::vector<uint8_t> result;
+
+  // Open clipboard
+  if (!OpenClipboard(NULL)) {
+    return result;
+  }
+
+  // 1. Try to get a dragged file (CF_HDROP), such as an image copied from Explorer
+  HDROP hDrop = (HDROP)GetClipboardData(CF_HDROP);
+  if (hDrop) {
+    UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+    if (fileCount > 0) {
+      wchar_t filePath[MAX_PATH];
+      if (DragQueryFileW(hDrop, 0, filePath, MAX_PATH)) {
+        const wchar_t* ext = PathFindExtensionW(filePath);
+        if (_wcsicmp(ext, L".png") == 0 || _wcsicmp(ext, L".jpg") == 0 ||
+            _wcsicmp(ext, L".jpeg") == 0 || _wcsicmp(ext, L".bmp") == 0 ||
+            _wcsicmp(ext, L".gif") == 0) {
+          HANDLE hFile = CreateFileW(filePath, GENERIC_READ, FILE_SHARE_READ,
+                                     NULL, OPEN_EXISTING,
+                                     FILE_ATTRIBUTE_NORMAL, NULL);
+          if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD fileSize = GetFileSize(hFile, NULL);
+            if (fileSize > 0 && fileSize < 50 * 1024 * 1024) {
+              result.resize(fileSize);
+              DWORD bytesRead = 0;
+              ReadFile(hFile, result.data(), fileSize, &bytesRead, NULL);
+            }
+            CloseHandle(hFile);
+            if (!result.empty()) {
+              CloseClipboard();
+              return result;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Try to get PNG format first
+  UINT cfPng = RegisterClipboardFormat(L"PNG");
+  HANDLE hPngData = GetClipboardData(cfPng);
+  if (hPngData) {
+    void* pData = GlobalLock(hPngData);
+    if (pData) {
+      SIZE_T size = GlobalSize(hPngData);
+      result.assign((uint8_t*)pData, (uint8_t*)pData + size);
+      GlobalUnlock(hPngData);
+    }
+    CloseClipboard();
+    return result;
+  }
+
+  // If no PNG, try to get bitmap and convert to PNG
+  InitGdiPlus();
+
+  HBITMAP hBitmap = (HBITMAP)GetClipboardData(CF_BITMAP);
+  if (!hBitmap) {
+    // Try DIB
+    HANDLE hDib = GetClipboardData(CF_DIB);
+    if (hDib) {
+      void* pDib = GlobalLock(hDib);
+      if (pDib) {
+        BITMAPINFO* pInfo = (BITMAPINFO*)pDib;
+        void* pBits = (uint8_t*)pDib + pInfo->bmiHeader.biSize;
+        if (pInfo->bmiHeader.biBitCount <= 8) {
+          int colors = pInfo->bmiHeader.biClrUsed;
+          if (colors == 0) colors = 1 << pInfo->bmiHeader.biBitCount;
+          pBits = (uint8_t*)pBits + (colors * sizeof(RGBQUAD));
+        }
+        Gdiplus::Bitmap bitmap(pInfo, pBits);
+        if (bitmap.GetLastStatus() == Gdiplus::Ok) {
+          IStream* pStream = NULL;
+          if (CreateStreamOnHGlobal(NULL, TRUE, &pStream) == S_OK) {
+            CLSID pngClsid;
+            if (GetEncoderClsid(L"image/png", &pngClsid) != -1) {
+              if (bitmap.Save(pStream, &pngClsid, NULL) == Gdiplus::Ok) {
+                HGLOBAL hMem = NULL;
+                GetHGlobalFromStream(pStream, &hMem);
+                if (hMem) {
+                  void* pMem = GlobalLock(hMem);
+                  SIZE_T size = GlobalSize(hMem);
+                  result.assign((uint8_t*)pMem, (uint8_t*)pMem + size);
+                  GlobalUnlock(hMem);
+                }
+              }
+            }
+            pStream->Release();
+          }
+        }
+        GlobalUnlock(hDib);
+      }
+    }
+  } else {
+    Gdiplus::Bitmap bitmap(hBitmap, NULL);
+    if (bitmap.GetLastStatus() == Gdiplus::Ok) {
+      IStream* pStream = NULL;
+      if (CreateStreamOnHGlobal(NULL, TRUE, &pStream) == S_OK) {
+        CLSID pngClsid;
+        if (GetEncoderClsid(L"image/png", &pngClsid) != -1) {
+          if (bitmap.Save(pStream, &pngClsid, NULL) == Gdiplus::Ok) {
+            HGLOBAL hMem = NULL;
+            GetHGlobalFromStream(pStream, &hMem);
+            if (hMem) {
+              void* pMem = GlobalLock(hMem);
+              SIZE_T size = GlobalSize(hMem);
+              result.assign((uint8_t*)pMem, (uint8_t*)pMem + size);
+              GlobalUnlock(hMem);
+            }
+          }
+        }
+        pStream->Release();
+      }
+    }
+  }
+
+  CloseClipboard();
+  return result;
 }

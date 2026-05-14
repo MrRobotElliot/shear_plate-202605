@@ -8,6 +8,45 @@ import 'package:shear_plate/account_page.dart';
 import 'package:shear_plate/settings_page.dart';
 import 'package:window_manager/window_manager.dart';
 
+/// Represents a clipboard item that can be either text or an image
+class ClipboardItem {
+  final String? text;
+  final Uint8List? imageData;
+  final DateTime timestamp;
+
+  ClipboardItem.text(this.text) : imageData = null, timestamp = DateTime.now();
+
+  ClipboardItem.image(this.imageData) : text = null, timestamp = DateTime.now();
+
+  bool get isText => text != null;
+  bool get isImage => imageData != null;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! ClipboardItem) return false;
+    if (isText && other.isText) return text == other.text;
+    if (isImage && other.isImage) {
+      final a = imageData;
+      final b = other.imageData;
+      if (a == null || b == null) return false;
+      if (a.length != b.length) return false;
+      for (var i = 0; i < a.length; i++) {
+        if (a[i] != b[i]) return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  @override
+  int get hashCode => isText
+      ? text.hashCode
+      : imageData == null
+      ? 0
+      : Object.hashAll(imageData!);
+}
+
 bool get _supportsNativeWindow {
   if (kIsWeb) return false;
   return defaultTargetPlatform == TargetPlatform.windows ||
@@ -47,17 +86,18 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  final List<String> _clipboardHistory = [];
+  final List<ClipboardItem> _clipboardHistory = [];
 
   /// Index into [_getFilteredHistory()]; null means no row selected.
   int? _selectedFilteredIndex;
   bool _alwaysOnTop = false;
-  String? _lastClipboardContent;
+  ClipboardItem? _lastClipboardContent;
   Timer? _clipboardTimer;
   late TextEditingController _searchController;
   final ScrollController _historyScrollController = ScrollController();
   final FocusNode _listFocusNode = FocusNode();
   String _searchText = '';
+  DateTime? _suppressClipboardListenerUntil;
 
   @override
   void initState() {
@@ -82,19 +122,31 @@ class _MyHomePageState extends State<MyHomePage> {
     super.dispose();
   }
 
-  List<String> _getFilteredHistory() {
+  List<ClipboardItem> _getFilteredHistory() {
     if (_searchText.isEmpty) {
       return _clipboardHistory;
     }
     return _clipboardHistory
-        .where((item) => item.toLowerCase().contains(_searchText.toLowerCase()))
+        .where(
+          (item) =>
+              item.isText &&
+              item.text!.toLowerCase().contains(_searchText.toLowerCase()),
+        )
         .toList();
   }
 
   /// Collapsed list preview: truncate by grapheme count, append ellipsis.
   static const int _kPreviewMaxGraphemes = 80;
 
-  InlineSpan _clipboardCollapsedSpan(String full, {bool isSelected = false}) {
+  InlineSpan _clipboardCollapsedSpan(
+    ClipboardItem item, {
+    bool isSelected = false,
+  }) {
+    if (item.isImage) {
+      return const TextSpan(text: '[图片]');
+    }
+
+    final full = item.text!;
     final g = full.characters;
     if (g.length <= _kPreviewMaxGraphemes || isSelected) {
       return TextSpan(text: full);
@@ -110,10 +162,10 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
-  /// Inserts or moves [text] to the front of history.
-  void _bumpClipboardEntry(String text) {
-    _clipboardHistory.remove(text);
-    _clipboardHistory.insert(0, text);
+  /// Inserts or moves [item] to the front of history.
+  void _bumpClipboardEntry(ClipboardItem item) {
+    _clipboardHistory.removeWhere((entry) => entry == item);
+    _clipboardHistory.insert(0, item);
   }
 
   /// Toggles whether the app window stays above other windows (desktop only).
@@ -156,18 +208,46 @@ class _MyHomePageState extends State<MyHomePage> {
       _,
     ) async {
       try {
-        ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
-        String? clipboardText = data?.text?.trim();
+        if (_suppressClipboardListenerUntil != null &&
+            DateTime.now().isBefore(_suppressClipboardListenerUntil!)) {
+          return;
+        }
 
-        if (clipboardText != null &&
-            clipboardText.isNotEmpty &&
-            clipboardText != _lastClipboardContent) {
-          _lastClipboardContent = clipboardText;
-          debugPrint('Clipboard changed: $clipboardText');
+        // 1. Priority: Check for image data first
+        // This includes actual image pixels and image files copied from Explorer
+        try {
+          const platform = MethodChannel('clipboard_image');
+          final Uint8List? imageData = await platform.invokeMethod<Uint8List>(
+            'getImage',
+          );
+          if (imageData != null && imageData.isNotEmpty) {
+            final item = ClipboardItem.image(imageData);
+            if (item != _lastClipboardContent) {
+              _lastClipboardContent = item;
+              debugPrint('Clipboard changed: image');
+              setState(() {
+                _bumpClipboardEntry(item);
+              });
+            }
+            return; // Found an image, skip text check
+          }
+        } catch (e) {
+          debugPrint('Failed to get image from clipboard: $e');
+        }
 
-          setState(() {
-            _bumpClipboardEntry(clipboardText);
-          });
+        // 2. Fallback: Check for text data
+        ClipboardData? textData = await Clipboard.getData(Clipboard.kTextPlain);
+        String? clipboardText = textData?.text?.trim();
+
+        if (clipboardText != null && clipboardText.isNotEmpty) {
+          final item = ClipboardItem.text(clipboardText);
+          if (item != _lastClipboardContent) {
+            _lastClipboardContent = item;
+            debugPrint('Clipboard changed: text');
+            setState(() {
+              _bumpClipboardEntry(item);
+            });
+          }
         }
       } catch (e) {
         debugPrint('Failed to read clipboard: $e');
@@ -177,15 +257,36 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _loadClipboardHistory() async {
     try {
-      ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
-      String? clipboardText = data?.text?.trim();
-      debugPrint('Clipboard content: $clipboardText');
+      // 1. Priority: Check for image data first
+      try {
+        const platform = MethodChannel('clipboard_image');
+        final Uint8List? imageData = await platform.invokeMethod<Uint8List>(
+          'getImage',
+        );
+        if (imageData != null && imageData.isNotEmpty) {
+          final item = ClipboardItem.image(imageData);
+          _lastClipboardContent = item;
+          setState(() {
+            _bumpClipboardEntry(item);
+          });
+          debugPrint('Loaded clipboard image');
+          return;
+        }
+      } catch (e) {
+        debugPrint('Failed to load image from clipboard: $e');
+      }
+
+      // 2. Fallback: Check for text data
+      ClipboardData? textData = await Clipboard.getData(Clipboard.kTextPlain);
+      String? clipboardText = textData?.text?.trim();
 
       if (clipboardText != null && clipboardText.isNotEmpty) {
-        _lastClipboardContent = clipboardText;
+        final item = ClipboardItem.text(clipboardText);
+        _lastClipboardContent = item;
         setState(() {
-          _bumpClipboardEntry(clipboardText);
+          _bumpClipboardEntry(item);
         });
+        debugPrint('Loaded clipboard text');
       }
     } catch (e) {
       debugPrint('Failed to load clipboard history: $e');
@@ -193,17 +294,64 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   /// Double-tap history row: sync system clipboard and move item to front.
-  Future<void> _activateHistoryItem(String text) async {
-    await Clipboard.setData(ClipboardData(text: text));
+  Future<void> _activateHistoryItem(ClipboardItem item) async {
+    debugPrint('=== _activateHistoryItem START ===');
+    debugPrint('Item type: ${item.isText ? "text" : "image"}');
+    if (item.isImage) {
+      debugPrint('Image data length: ${item.imageData?.length}');
+    }
+
+    final int identicalHistoryIndex = _clipboardHistory.indexWhere(
+      (entry) => identical(entry, item),
+    );
+    final int historyIndex = identicalHistoryIndex != -1
+        ? identicalHistoryIndex
+        : _clipboardHistory.indexWhere((entry) => entry == item);
+    final ClipboardItem historyItem = historyIndex != -1
+        ? _clipboardHistory[historyIndex]
+        : item;
+
+    final ClipboardItem? previousClipboardContent = _lastClipboardContent;
+    _lastClipboardContent = historyItem;
+    _suppressClipboardListenerUntil = DateTime.now().add(
+      const Duration(seconds: 3),
+    );
+    try {
+      if (historyItem.isText) {
+        debugPrint('Setting text to clipboard: ${historyItem.text}');
+        await Clipboard.setData(ClipboardData(text: historyItem.text!));
+        debugPrint('✓ Clipboard text set successfully');
+      } else if (historyItem.isImage) {
+        debugPrint(
+          'Attempting to restore image to clipboard, data length: ${historyItem.imageData?.length}',
+        );
+        const platform = MethodChannel('clipboard_image');
+        debugPrint('Calling platform method: setImage');
+        await platform.invokeMethod('setImage', {
+          'data': historyItem.imageData,
+        });
+        debugPrint('✓ Successfully called platform method: setImage');
+      }
+    } catch (e) {
+      _lastClipboardContent = previousClipboardContent;
+      _suppressClipboardListenerUntil = null;
+      debugPrint('✗ ERROR: Failed to set clipboard: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('无法复制内容到剪切板: $e')));
+      }
+      return;
+    }
+
     if (!mounted) return;
+    debugPrint('Moving item to front of history...');
     setState(() {
-      _lastClipboardContent = text;
-      _bumpClipboardEntry(text);
-      // After bumping, the item is at the top of the history.
-      // We set the selection to 0 so the first item is highlighted.
+      _bumpClipboardEntry(historyItem);
       _selectedFilteredIndex = 0;
+      debugPrint('✓ Item moved to position 0');
     });
-    debugPrint('Clipboard restored from history: $text');
+    debugPrint('=== _activateHistoryItem END ===');
   }
 
   void _handleCopyShortcut() {
@@ -364,31 +512,52 @@ class _MyHomePageState extends State<MyHomePage> {
                                           )
                                         : null,
                                   ),
-                                  child: RichText(
-                                    text: TextSpan(
-                                      children: [
-                                        _clipboardCollapsedSpan(
-                                          item,
-                                          isSelected: isSelected,
+                                  child: item.isImage
+                                      ? Row(
+                                          children: [
+                                            Container(
+                                              width: 40,
+                                              height: 40,
+                                              decoration: BoxDecoration(
+                                                borderRadius:
+                                                    BorderRadius.circular(4.0),
+                                                image: DecorationImage(
+                                                  image: MemoryImage(
+                                                    item.imageData!,
+                                                  ),
+                                                  fit: BoxFit.cover,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            const Text('[图片]'),
+                                          ],
+                                        )
+                                      : RichText(
+                                          text: TextSpan(
+                                            children: [
+                                              _clipboardCollapsedSpan(
+                                                item,
+                                                isSelected: isSelected,
+                                              ),
+                                            ],
+                                            style: TextStyle(
+                                              color: isSelected
+                                                  ? Theme.of(context)
+                                                        .colorScheme
+                                                        .onPrimaryContainer
+                                                  : Theme.of(
+                                                      context,
+                                                    ).colorScheme.onSurface,
+                                            ),
+                                          ),
+                                          textAlign: TextAlign.start,
+                                          softWrap: true,
+                                          maxLines: isSelected ? null : 3,
+                                          overflow: isSelected
+                                              ? TextOverflow.visible
+                                              : TextOverflow.ellipsis,
                                         ),
-                                      ],
-                                      style: TextStyle(
-                                        color: isSelected
-                                            ? Theme.of(
-                                                context,
-                                              ).colorScheme.onPrimaryContainer
-                                            : Theme.of(
-                                                context,
-                                              ).colorScheme.onSurface,
-                                      ),
-                                    ),
-                                    textAlign: TextAlign.start,
-                                    softWrap: true,
-                                    maxLines: isSelected ? null : 3,
-                                    overflow: isSelected
-                                        ? TextOverflow.visible
-                                        : TextOverflow.ellipsis,
-                                  ),
                                 ),
                               );
                             },
