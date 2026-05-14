@@ -237,6 +237,7 @@ bool SetImageToClipboard(HWND hwnd, const std::vector<uint8_t>& imageData) {
   }
 
   HGLOBAL hPng = nullptr;
+  HGLOBAL hDrop = nullptr;
   if (!pngBytes.empty()) {
     hPng = GlobalAlloc(GMEM_MOVEABLE, pngBytes.size());
     if (!hPng) {
@@ -255,11 +256,55 @@ bool SetImageToClipboard(HWND hwnd, const std::vector<uint8_t>& imageData) {
     }
     memcpy(pPng, pngBytes.data(), pngBytes.size());
     GlobalUnlock(hPng);
+
+    WCHAR tempPath[MAX_PATH] = {};
+    WCHAR tempFile[MAX_PATH] = {};
+    if (GetTempPathW(MAX_PATH, tempPath) > 0 &&
+        GetTempFileNameW(tempPath, L"img", 0, tempFile) != 0) {
+      if (PathRenameExtensionW(tempFile, L".png")) {
+        HANDLE hFile = CreateFileW(
+            tempFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+          DWORD bytesWritten = 0;
+          if (WriteFile(hFile, pngBytes.data(),
+                        static_cast<DWORD>(pngBytes.size()), &bytesWritten,
+                        NULL) && bytesWritten == pngBytes.size()) {
+            struct DropFilesStruct {
+              DWORD pFiles;
+              POINT pt;
+              BOOL fNC;
+              BOOL fWide;
+            };
+            SIZE_T pathBytes = (wcslen(tempFile) + 2) * sizeof(WCHAR);
+            SIZE_T dropSize = sizeof(DropFilesStruct) + pathBytes;
+            hDrop = GlobalAlloc(GMEM_MOVEABLE, dropSize);
+            if (hDrop) {
+              DropFilesStruct* pDrop = (DropFilesStruct*)GlobalLock(hDrop);
+              if (pDrop) {
+                ZeroMemory(pDrop, dropSize);
+                pDrop->pFiles = sizeof(DropFilesStruct);
+                pDrop->fWide = TRUE;
+                memcpy((BYTE*)pDrop + sizeof(DropFilesStruct), tempFile, pathBytes);
+                GlobalUnlock(hDrop);
+              } else {
+                GlobalFree(hDrop);
+                hDrop = nullptr;
+              }
+            }
+          }
+          CloseHandle(hFile);
+        }
+      }
+    }
   }
 
   if (!OpenClipboard(NULL)) {
     GlobalFree(hPng);
     GlobalFree(hDib);
+    if (hDrop) {
+      GlobalFree(hDrop);
+    }
     DeleteObject(hBitmap);
     std::cout << "[SetImageToClipboard] ERROR: OpenClipboard failed" << std::endl;
     return false;
@@ -299,6 +344,16 @@ bool SetImageToClipboard(HWND hwnd, const std::vector<uint8_t>& imageData) {
     } else {
       GlobalFree(hPng);
       std::cout << "[SetImageToClipboard] PNG format failed" << std::endl;
+    }
+  }
+
+  if (hDrop) {
+    if (SetClipboardData(CF_HDROP, hDrop)) {
+      success = true;
+      std::cout << "[SetImageToClipboard] CF_HDROP set" << std::endl;
+    } else {
+      GlobalFree(hDrop);
+      std::cout << "[SetImageToClipboard] CF_HDROP failed" << std::endl;
     }
   }
 
